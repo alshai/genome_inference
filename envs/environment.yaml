@@ -1,0 +1,10 @@
+name: genome_inference
+channels:
+    - bioconda
+dependencies:
+    - htslib
+    - seqtk
+    - bcftools
+    - samtools 
+    - bowtie2
+    - mason

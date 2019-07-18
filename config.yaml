@@ -1,0 +1,13 @@
+samples: ["HG00096"]
+
+coverage: [1, 5, 10]
+
+total_coverage: 30
+
+read_length: 100
+
+nreads: 14500000
+
+index: "data/chr21.fa"
+
+vcf: "data/chr21.vcf.gz"
