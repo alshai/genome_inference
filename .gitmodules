@@ -1,0 +1,8 @@
+[submodule "liftover"]
+	path = liftover
+	url = https://github.com/alshai/liftover
+	branch = master
+[submodule "varcount"]
+	path = varcount
+	url = https://github.com/alshai/varcount
+	branch = master
