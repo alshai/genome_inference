@@ -1,6 +1,6 @@
 samples: ["HG00096"]
 
-coverage: [1, 5, 10]
+coverage: [5]
 
 total_coverage: 30
 
@@ -11,3 +11,5 @@ nreads: 14500000
 index: "data/chr21.fa"
 
 vcf: "data/chr21.vcf.gz"
+
+map: "data/plink.chr21.GRCh37.map"
