@@ -1,4 +1,4 @@
-samples: ["HG00096"]
+samples: ["NA12878"]
 
 coverage: [5]
 
@@ -12,4 +12,6 @@ index: "data/chr21.fa"
 
 vcf: "data/chr21.vcf.gz"
 
-map: "data/plink.chr21.GRCh37.map"
+beagle_map: "data/plink.chr21.GRCh37.map"
+
+shapeit_map: "data/chr21.b37.gmap.gz"
