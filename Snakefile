@@ -161,7 +161,7 @@ rule impute:
         ref={input.panel} \
         map={input.gmap} \
         out={params.prefix};\n"
-        # fix the header
+        # fix the header so that liftover works
         "mv {output.vcf} {params.old_vcf};\n"
         "bcftools view -h {params.old_vcf} | sed '/##contig/d'  | head -n -1 >> {params.unzipped_vcf};\n"
         "bcftools view -h {input.vcf} | grep -P '##contig|#CHROM' >> {params.unzipped_vcf};\n"
