@@ -18,8 +18,8 @@ LIFT        =   os.path.join(DIR, "pg.lft")
 
 rule all:
     input:
-        expand(IMPUTE_GT, sample=config["samples"], coverage=config["coverage"]),
-        # expand(COUNTS, sample=config["samples"], coverage=config["coverage"]),
+        # expand(BEAGLE_GT, sample=config["samples"], coverage=config["coverage"]),
+        expand(COUNTS, sample=config["samples"], coverage=config["coverage"]),
 
 rule filter_vcf:
     input:
@@ -85,7 +85,7 @@ rule simulate_reads:
         rlen=config["read_length"]
     threads: 16
     shell:
-        "cat {input.fa1} {input.fa2} | seqtk rename - DIPLOID > {output.fa};\n"
+        "cat {input.fa1} {input.fa2} | awk 'BEGIN {{i=1}} /^>/ {{print \">genome\"i++}} /^[^>]/ {{print}}' > {output.fa};\n"
         "mason_simulator --num-threads {threads} "
                          "-ir {output.fa} "
                          "-n {params.nreads} "
@@ -116,7 +116,7 @@ rule count:
         thres=lambda wildcards: math.ceil(float(wildcards.coverage) / 2),
         sample="{sample}"
     shell:
-        "varcount/varcount -g -s {params.sample} {input.vcf} {input.bam} | "
+        "varcount/varcount -glikelihood -s {params.sample} {input.vcf} {input.bam} | "
         "bcftools sort -O z > {output.vcf};\n"
         "bcftools index {output.vcf}"
 
@@ -126,12 +126,12 @@ rule beagle_impute:
         panel=REF_PANEL,
         gmap=config['beagle_map']
     output:
-        vcf=IMPUTE_GT,
-        idx=IMPUTE_GT + ".csi",
+        vcf=BEAGLE_GT,
+        idx=BEAGLE_GT + ".csi",
     params:
-        prefix=IMPUTE_GT.replace(".vcf.gz", ""),
-        old_vcf=temp(IMPUTE_GT.replace(".vcf.gz", "old.vcf.gz")),
-        unzipped_vcf=temp(IMPUTE_GT.replace(".vcf.gz", ".vcf")),
+        prefix=BEAGLE_GT.replace(".vcf.gz", ""),
+        old_vcf=temp(BEAGLE_GT.replace(".vcf.gz", "old.vcf.gz")),
+        unzipped_vcf=temp(BEAGLE_GT.replace(".vcf.gz", ".vcf")),
     threads:
         16
     shell:
@@ -152,8 +152,8 @@ rule beagle_impute:
 # rule index_personal:
 #     input:
 #         ref=config["index"],
-#         vcf=IMPUTE_GT,
-#         idx=IMPUTE_GT + ".csi"
+#         vcf=BEAGLE_GT,
+#         idx=BEAGLE_GT + ".csi"
 #     output:
 #         fa=PG,
 #         idx1=PG+".1.bt2",
@@ -171,7 +171,7 @@ rule beagle_impute:
 # 
 # rule serialize_liftover:
 #     input:
-#        vcf=IMPUTE_GT
+#        vcf=BEAGLE_GT
 #     output:
 #        LIFT
 #     params:
