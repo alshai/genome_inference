@@ -12,14 +12,16 @@ GENOME1      =   os.path.join("{sample}/diploid", "genome1.fa")
 GENOME2      =   os.path.join("{sample}/diploid", "genome2.fa")
 BAM         =   os.path.join(DIR, "hg19_alns.bam") 
 COUNTS    =   os.path.join(DIR, "genotype_by_count.vcf.gz")
+FILTERED_COUNTS    =   os.path.join(DIR, "genotype_by_count.filtered.vcf.gz")
 BEAGLE_GT   =   os.path.join(DIR, "genotype_by_impute.vcf.gz")
-PG          =   os.path.join(DIR, "pg.fa")
-LIFT        =   os.path.join(DIR, "pg.lft")
+PG          =   os.path.join(DIR, "pg.{i}.fa")
+LIFT        =   os.path.join(DIR, "pg.{i}.lft")
+REF_LENGTHS="data/ref_lengths.txt"
 
 rule all:
     input:
-        # expand(BEAGLE_GT, sample=config["samples"], coverage=config["coverage"]),
-        expand(COUNTS, sample=config["samples"], coverage=config["coverage"]),
+        expand(LIFT, sample=config["samples"], coverage=config["coverage"], i=[1,2]),
+        expand(PG, sample=config["samples"], coverage=config["coverage"], i=[1,2])
 
 rule filter_vcf:
     input:
@@ -120,9 +122,22 @@ rule count:
         "bcftools sort -O z > {output.vcf};\n"
         "bcftools index {output.vcf}"
 
+
+rule filter_counts:
+    input:
+        vcf=COUNTS
+    output:
+        vcf=FILTERED_COUNTS,
+        tmp=temp(FILTERED_COUNTS + "_tmp.vcf")
+    shell:
+        "bcftools view -i 'GT~\"A\"' {input.vcf} > {output.tmp};\n"
+        "bcftools view -H -i 'GT~\"RR\"' {input.vcf} | shuf -n 50000 >> {output.tmp};\n"
+        "bcftools sort -Oz {output.tmp} > {output.vcf};\n"
+        "bcftools index {output.vcf};\n"
+
 rule beagle_impute:
     input:
-        vcf=COUNTS,
+        vcf=FILTERED_COUNTS,
         panel=REF_PANEL,
         gmap=config['beagle_map']
     output:
@@ -140,43 +155,46 @@ rule beagle_impute:
         ref={input.panel} \
         map={input.gmap} \
         out={params.prefix};\n"
-        # fix the header so that liftover works
-        "mv {output.vcf} {params.old_vcf};\n"
-        "bcftools view -h {params.old_vcf} | sed '/##contig/d'  | head -n -1 >> {params.unzipped_vcf};\n"
-        "bcftools view -h {input.vcf} | grep -P '##contig|#CHROM' >> {params.unzipped_vcf};\n"
-        "bcftools view -H {params.old_vcf} >> {params.unzipped_vcf};\n"
-        "bgzip {params.unzipped_vcf};\n"
         "bcftools index {output.vcf};\n"
-        "rm {params.old_vcf};\n"
 
-# rule index_personal:
-#     input:
-#         ref=config["index"],
-#         vcf=BEAGLE_GT,
-#         idx=BEAGLE_GT + ".csi"
-#     output:
-#         fa=PG,
-#         idx1=PG+".1.bt2",
-#         idx2=PG+".2.bt2",
-#         idx3=PG+".3.bt2",
-#         idx4=PG+".4.bt2",
-#         idx5=PG+".rev.1.bt2",
-#         idx6=PG+".rev.2.bt2"
-#     threads: 16
-#     params:
-#         sample="{sample}"
-#     shell:
-#         "bcftools consensus -f {input.ref} -H 1 -s {params.sample} {input.vcf} > {output.fa};\n"
-#         "bowtie2-build --threads {threads} {output.fa} {output.fa}"
-# 
-# rule serialize_liftover:
-#     input:
-#        vcf=BEAGLE_GT
-#     output:
-#        LIFT
-#     params:
-#         sample="{sample}",
-#         prefix=LIFT.replace(".lft", "")
-#     shell:
-#         "bin/liftover serialize -v {input.vcf} -s {params.sample} -p {params.prefix}"
-#
+rule extract_lengths:
+    input:
+        vcf=REF_PANEL
+    output:
+        REF_LENGTHS
+    shell:
+        "bcftools view -h {input} | grep '##contig' | sed -E 's/##contig=<ID=(.*),assembly=.*,length=([0-9]+)>/\\1\t\\2/' > {output}"
+        
+rule index_personal:
+    input:
+        ref=config["index"],
+        vcf=BEAGLE_GT,
+        idx=BEAGLE_GT + ".csi"
+    output:
+        fa=PG,
+        idx1=PG+".1.bt2",
+        idx2=PG+".2.bt2",
+        idx3=PG+".3.bt2",
+        idx4=PG+".4.bt2",
+        idx5=PG+".rev.1.bt2",
+        idx6=PG+".rev.2.bt2"
+    threads: 16
+    params:
+        sample="{sample}",
+        i="{i}"
+    shell:
+        "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa};\n"
+        "bowtie2-build --threads {threads} {output.fa} {output.fa}"
+
+rule serialize_liftover:
+    input:
+       vcf=BEAGLE_GT,
+       lengths=REF_LENGTHS
+    output:
+       LIFT
+    params:
+        sample="{sample}",
+        i=lambda w: int(w.i) - 1,
+        prefix=LIFT.replace(".lft", ""),
+    shell:
+        "liftover/liftover serialize -v {input.vcf} --haplotype {params.i} -s {params.sample} -p {params.prefix} -k {input.lengths}"
