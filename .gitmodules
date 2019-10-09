@@ -6,3 +6,6 @@
 	path = varcount
 	url = https://github.com/alshai/varcount
 	branch = master
+[submodule "hts_utils"]
+	path = hts_utils
+	url = ./hts_utils
