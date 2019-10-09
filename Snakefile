@@ -17,11 +17,16 @@ BEAGLE_GT   =   os.path.join(DIR, "genotype_by_impute.vcf.gz")
 PG          =   os.path.join(DIR, "pg.{i}.fa")
 LIFT        =   os.path.join(DIR, "pg.{i}.lft")
 REF_LENGTHS="data/ref_lengths.txt"
+UNLIFTED_ALNS = os.path.join(DIR, "unlifted.{i}.sam")
+LIFTED_ALNS = os.path.join(DIR, "lifted.{i}.sam")
+LIFTED_SCORE = os.path.join(DIR, "lifted.{i}.score")
+HG19_ALNS = os.path.join("{sample}/diploid", "hg19_alns.sam")
 
 rule all:
     input:
-        expand(LIFT, sample=config["samples"], coverage=config["coverage"], i=[1,2]),
-        expand(PG, sample=config["samples"], coverage=config["coverage"], i=[1,2])
+        expand(LIFTED_SCORE, sample=config["samples"], coverage=config["coverage"], i=[1,2]),
+        # expand(HG19_ALNS.replace(".sam", ".score"), sample=config["samples"], coverage=config["coverage"], i=[1,2]),
+        
 
 rule filter_vcf:
     input:
@@ -47,14 +52,14 @@ rule make_ref_panel:
 
 rule index_hg19:
     input:
-        config["index"]
+        config["hg19_index"]
     output:
-        config["index"] + ".1.bt2",
-        config["index"] + ".2.bt2",
-        config["index"] + ".3.bt2",
-        config["index"] + ".4.bt2",
-        config["index"] + ".rev.1.bt2",
-        config["index"] + ".rev.2.bt2"
+        config["hg19_index"] + ".1.bt2",
+        config["hg19_index"] + ".2.bt2",
+        config["hg19_index"] + ".3.bt2",
+        config["hg19_index"] + ".4.bt2",
+        config["hg19_index"] + ".rev.1.bt2",
+        config["hg19_index"] + ".rev.2.bt2"
     threads: 16
     shell:
         "bowtie2-build --threads {threads} {input} {input}"
@@ -62,7 +67,7 @@ rule index_hg19:
 # CHANGES: no simulates BOTH haplotypes!
 rule simulate_haplotype:
     input:
-        ref=config["index"],
+        ref=config["hg19_index"],
         vcf=VCF,
         vcf_idx=VCF + ".csi"
     output:
@@ -95,13 +100,57 @@ rule simulate_reads:
                          "-o {output.fq} "
                          "-oa {output.sam}"
 
+rule split_true_read_alignments:
+    input:
+        sam=READS.replace(".fq.gz", ".sam")
+    output:
+        sam1=READS.replace(".fq.gz", ".1.sam"),
+        sam2=READS.replace(".fq.gz", ".2.sam")
+    run:
+        fp1 = open(output[0], "w")
+        fp2 = open(output[1], "w")
+        for line in open(input[0], "r"):
+            if line[0] == "@":
+                fp1.write(line)
+                fp2.write(line)
+            else:
+                fields = line.split()
+                if fields[2] == "genome1":
+                    fp1.write(line)
+                elif fields[2] == "genome2":
+                    fp2.write(line)
+        fp1.close()
+        fp2.close()
+
+rule lift_true_read_alignments:
+    input:
+        vcf=VCF,
+        sam=READS.replace(".fq.gz", ".{i}.sam"),
+    output:
+        sam=READS.replace(".fq.gz", ".{i}.lifted.sam")
+    params:
+        sample = "{sample}",
+        h = lambda w: int(w.i) - 1,
+        i = "{i}"
+    shell:
+        "liftover/liftover lift -v {input.vcf} -a {input.sam} -s {params.sample} --haplotype {params.h} -n <(echo '21	genome{params.i}') > {output}"
+        
+rule concat_lifted_truth:
+    input:
+        one=READS.replace(".fq.gz", ".1.lifted.sam"),
+        two=READS.replace(".fq.gz", ".2.lifted.sam")
+    output:
+        READS.replace(".fq.gz", ".lifted.sam")
+    shell:
+        "hts_util/merge_sams {input.one} {input.two} > {output}"
+
 rule align_subset:
     input:
         fq=READS,
-        idx1=config["index"] + ".1.bt2"
+        idx1=config["hg19_index"] + ".1.bt2"
     params:
         fracs=lambda wildcards: float(wildcards.coverage) / config["total_coverage"], # multiply by 2 for diploid?
-        index=config["index"]
+        index=config["hg19_index"]
     output:
         bam=BAM
     threads: 16
@@ -159,7 +208,7 @@ rule beagle_impute:
 
 rule extract_lengths:
     input:
-        vcf=REF_PANEL
+        vcf=VCF
     output:
         REF_LENGTHS
     shell:
@@ -167,7 +216,7 @@ rule extract_lengths:
         
 rule index_personal:
     input:
-        ref=config["index"],
+        ref=config["hg19_index"],
         vcf=BEAGLE_GT,
         idx=BEAGLE_GT + ".csi"
     output:
@@ -198,3 +247,72 @@ rule serialize_liftover:
         prefix=LIFT.replace(".lft", ""),
     shell:
         "liftover/liftover serialize -v {input.vcf} --haplotype {params.i} -s {params.sample} -p {params.prefix} -k {input.lengths}"
+
+rule align_all_to_imputed:
+    input:
+        fa=PG,
+        idx1=PG+".1.bt2",
+        idx2=PG+".2.bt2",
+        idx3=PG+".3.bt2",
+        idx4=PG+".4.bt2",
+        idx5=PG+".rev.1.bt2",
+        idx6=PG+".rev.2.bt2",
+        reads=READS
+    output:
+        sam=UNLIFTED_ALNS
+    threads: 16
+    shell:
+        "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}"
+
+rule align_all_to_hg19:
+    input:
+        fa=config["hg19_index"],
+        idx1=config["hg19_index"]+".1.bt2",
+        idx2=config["hg19_index"]+".2.bt2",
+        idx3=config["hg19_index"]+".3.bt2",
+        idx4=config["hg19_index"]+".4.bt2",
+        idx5=config["hg19_index"]+".rev.1.bt2",
+        idx6=config["hg19_index"]+".rev.2.bt2",
+        reads=READS
+    output:
+        sam=HG19_ALNS
+    threads: 16
+    shell:
+        "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}"
+
+rule lift_imputed_alns:
+    input:
+        sam=UNLIFTED_ALNS,
+        lft=LIFT
+    output:
+        sam=LIFTED_ALNS
+    params:
+        prefix=LIFTED_ALNS.replace(".sam","")
+    shell:
+        "liftover/liftover lift -l {input.lft} -a {input.sam} -p {params.prefix} > {output.sam}"
+
+score_cmd = "hts_utils/score_sam {input.truth} {input.sam} > {output}"
+rule score_imputed_alns:
+    input:
+        truth=READS.replace(".fq.gz", ".lifted.sam"),
+        sam=LIFTED_ALNS
+    output:
+        LIFTED_SCORE
+    shell:
+        score_cmd
+
+
+rule score_hg19_alns:
+    input:
+        truth=READS.replace(".fq.gz", ".lifted.sam"),
+        sam=HG19_ALNS
+    output:
+        HG19_ALNS.replace(".sam", ".score")
+    shell: 
+        score_cmd
+
+rule score_personal_aligns:
+    input: 
+    output:
+    shell:
+        score_cmd
