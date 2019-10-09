@@ -8,10 +8,11 @@ read_length: 100
 
 nreads: 28877067 # this is technically 60x coverage
 
-index: "data/chr21.fa"
+hg19_index: "data/chr21.fa"
 
 vcf: "data/chr21.vcf.gz"
 
 beagle_map: "data/plink.chr21.GRCh37.map"
 
 shapeit_map: "data/chr21.b37.gmap.gz"
+
