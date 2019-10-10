@@ -1,12 +1,12 @@
 samples: ["NA12878"]
 
-coverage: [10]
+coverage: [1, 2, 5, 10, 20, 30]
 
 total_coverage: 60
 
 read_length: 100
 
-nreads: 28877067 # this is technically 60x coverage
+nreads: 14438968 # this is technically 15x coverage for each haplotype
 
 hg19_index: "data/chr21.fa"
 
