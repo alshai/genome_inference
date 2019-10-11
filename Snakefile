@@ -10,21 +10,24 @@ cmds = {
     'score': 
         "hts_utils/score_sam {input.truth} {input.sam} > {output}" ,
     'lift': 
-        "liftover/liftover lift "
-        "-v {input.vcf} "
-        "-a {input.sam} "
-        "-k {input.lengths} "
-        "--haplotype {params.i} "
-        "-s {params.sample} "
-        "-p {params.prefix} "
+        "liftover/liftover lift -v {input.vcf} -a {input.sam} -k {input.lengths} --haplotype {params.i} -s {params.sample} -p {params.prefix}"
 }
 
 
 IMP_LIFTED_SCORE    =  "{sample}/{coverage}x/{genotyper}/{filter}/merged.score"
 PERS_MERGED_SCORE   =  "{sample}/personal/merged.score"
 HG19_SCORE          =  "{sample}/hg19/alns.score"
+
 rule all:
     input:
+        expand("{sample}/hg19/summary.txt", sample=config["samples"]),
+        expand("{sample}/personal/summary.txt", sample=config["samples"]),
+        expand("{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
+               genotyper=["likelihood_naive"],
+               filter=["aa", 'ar', 'aa+ar', 'aa+ar+some_rr'],
+               sample=config["samples"], 
+               coverage=config["coverage"]
+              ),
         expand(IMP_LIFTED_SCORE, 
                genotyper=["likelihood_naive"],
                filter=["aa", 'ar', 'aa+ar', 'aa+ar+some_rr'],
@@ -433,3 +436,127 @@ rule personal_score_alns:
     shell:
         cmds["score"]
 
+
+rule imp_summarize_exp:
+    input:
+        ref_vcf=VCF,
+        imp_vcf=IMP_BEAGLE_GT, 
+        scores=IMP_LIFTED_SCORE,
+    output:
+        "{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
+    params:
+        sample="{sample}",
+        coverage="{coverage}",
+        genotyper="{genotyper}",
+        filter="{filter}"
+    run:
+        # get hamm of imputed
+        hamm1 = 0
+        hamm2 = 0
+        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.sample} {input.ref_vcf} {input.imp_vcf}", iterable=True):
+            hamm1 = int(line)
+            break
+        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.sample} {input.ref_vcf} {input.imp_vcf}", iterable=True):
+            hamm2 = int(line)
+            break
+        # get score of alignments
+        c_alns = 0
+        t_alns = 0
+        for line in open(input.scores):
+            if line[-2] == "1":
+                c_alns += 1
+            t_alns += 1
+        with open(output[0], "w") as fp:
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+                sample=params.sample,
+                coverage=params.coverage,
+                genotyper=params.genotyper,
+                filter=params.filter,
+                hamm1=hamm1,
+                hamm2=hamm2,
+                correct=float(c_alns)/t_alns
+            )
+            fp.write(to_write)
+
+rule personal_summarize_exp:
+    input:
+        ref_vcf=VCF,
+        scores=PERS_MERGED_SCORE,
+    output:
+        "{sample}/personal/summary.txt",
+    params:
+        sample="{sample}",
+        coverage="30x",
+        genotyper="NA",
+        filter="NA"
+    run:
+        hamm1 = 0
+        hamm2 = 0
+        c_alns = 0
+        t_alns = 0
+        for line in open(input.scores):
+            if line[-2] == "1":
+                c_alns += 1
+            t_alns += 1
+        with open(output[0], "w") as fp:
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+                sample=params.sample,
+                coverage=params.coverage,
+                genotyper=params.genotyper,
+                filter=params.filter,
+                hamm1=hamm1,
+                hamm2=hamm2,
+                correct=float(c_alns)/t_alns
+            )
+            fp.write(to_write)
+
+rule hg19_summarize_exp:
+    input:
+        ref_vcf=VCF,
+        scores=HG19_SCORE,
+    output:
+        "{sample}/hg19/summary.txt",
+    params:
+        sample="{sample}",
+        coverage="30x",
+        genotyper="NA",
+        filter="NA"
+    run:
+        hamm1 = 0
+        hamm2 = 0
+        talts = 0
+        c_alns = 0
+        t_alns = 0
+        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | wc -l", iterable=True):
+            talts = int(line)
+            break
+        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | bcftools view -i 'GT~\"0|\"'", iterable=True):
+            hamm1 += 1
+        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | bcftools view -i 'GT~\"|0\"'", iterable=True):
+            hamm2 += 1
+        hamm1 = talts - hamm1
+        hamm2 = talts - hamm2
+        for line in open(input.scores):
+            if line[-2] == "1":
+                c_alns += 1
+            t_alns += 1
+
+        with open(output[0], "w") as fp:
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+                sample=params.sample,
+                coverage=params.coverage,
+                genotyper=params.genotyper,
+                filter=params.filter,
+                hamm1=hamm1,
+                hamm2=hamm2,
+                correct=float(c_alns)/t_alns
+            )
+            fp.write(to_write)
+
+rule gather_summaries:
+    input:
+        "{sample}/{everything}/summary.txt"
+    output:
+        "{sample}/summaries.txt"
+    shell:
+        "cat {input} > {output}"
