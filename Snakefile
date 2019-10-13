@@ -1,46 +1,49 @@
 import math 
 import os
+import random
+from command_dict import cmds
 
 configfile: "config.yaml"
 
-
-cmds = {
-    'align':
-        "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}",
-    'score': 
-        "hts_utils/score_sam {input.truth} {input.sam} > {output}" ,
-    'lift': 
-        "liftover/liftover lift -v {input.vcf} -a {input.sam} -k {input.lengths} --haplotype {params.i} -s {params.sample} -p {params.prefix}"
-}
-
+# TODO: figure out how to allow anything except for hg19 and personal
+wildcard_constraints:
+    sample="NA.+|HG.+",
+    other_sample="NA.+|HG.+",
 
 IMP_LIFTED_SCORE    =  "{sample}/{coverage}x/{genotyper}/{filter}/merged.score"
 PERS_MERGED_SCORE   =  "{sample}/personal/merged.score"
 HG19_SCORE          =  "{sample}/hg19/alns.score"
+TEST_SAMPLES="data/test_samples.txt"
+REF_SAMPLES="data/ref_samples.txt"
 
+if os.path.isfile(TEST_SAMPLES) and os.path.isfile(REF_SAMPLES):
+    SAMPLES = open(TEST_SAMPLES).read().strip().split("\n")
+else:
+    SAMPLES = []
+
+print(TEST_SAMPLES)
 rule all:
     input:
-        expand("{sample}/hg19/summary.txt", sample=config["samples"]),
-        expand("{sample}/personal/summary.txt", sample=config["samples"]),
+        TEST_SAMPLES, REF_SAMPLES,
+        expand("{sample}/hg19/summary.txt", sample=SAMPLES),
+        expand("{sample}/personal/summary.txt", sample=SAMPLES),
         expand("{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
                genotyper=["likelihood_naive"],
-               filter=["aa", 'ar', 'aa+ar', 'aa+ar+some_rr'],
-               sample=config["samples"], 
+               filter=['ar', 'aa+ar', 'aa+ar+some_rr'],
+               sample=SAMPLES, 
                coverage=config["coverage"]
               ),
-        expand(IMP_LIFTED_SCORE, 
-               genotyper=["likelihood_naive"],
-               filter=["aa", 'ar', 'aa+ar', 'aa+ar+some_rr'],
-               sample=config["samples"], 
-               coverage=config["coverage"]),
-        expand(PERS_MERGED_SCORE, sample=config["samples"]),
-        expand(HG19_SCORE, sample=config["samples"])
+        expand("{sample}/{other_sample}/summary.txt", sample=SAMPLES, other_sample=SAMPLES),
+
 ###### PREPARE DATA FOR LATER STAGES ############
 
 VCF         =   config["vcf"].replace(".vcf.gz", ".filtered.vcf.gz")
+ONEKG_GT    =   "{sample}/genotype.vcf.gz"
 REF_PANEL   =   config["vcf"].replace(".vcf.gz", ".filtered.leave_out.vcf.gz")
-READS       =   "{sample}/reads.fq.gz"
-TRUE_ALNS =   READS.replace(".fq.gz", ".lifted.bam")
+TRAIN_READS =   "{sample}/train_reads.fq.gz"
+TRAIN_TRUTH =   TRAIN_READS.replace(".fq.gz", ".lifted.bam")
+TEST_READS  =   "{sample}/test_reads.fq.gz"
+TEST_TRUTH  =   TEST_READS.replace(".fq.gz", ".lifted.bam")
 REF_LENGTHS =   "data/ref_lengths.txt"
 GENOME      =   "{sample}/genome{i}.fa"
 
@@ -54,17 +57,36 @@ rule filter_vcf:
         "bcftools view -O z -V mnps,other {input.vcf} > {output.vcf};\n"
         "bcftools index {output.vcf}"
 
+rule choose_samples:
+    input:
+        vcf=VCF,
+    output:
+        t=TEST_SAMPLES,
+        r=REF_SAMPLES
+    params:
+        ntest=config["n_test_samples"]
+    run:
+        samples = set()
+        for line in shell("bcftools query -l {input.vcf}", iterable=True):
+            samples.add(line.strip())
+        test_samples = set(random.sample(samples, params.ntest))
+        ref_samples = samples - test_samples
+        with open(output.t, "w") as fp:
+            fp.write("\n".join(test_samples))
+        with open(output.r, "w") as fp:
+            fp.write("\n".join(ref_samples))
+
 rule make_ref_panel:
     input:
         vcf=VCF,
-        idx=VCF + ".csi"
+        idx=VCF + ".csi",
+        samples=REF_SAMPLES
     output:
         vcf=REF_PANEL
-    params:
-        samples="|".join(config["samples"])
     shell:
-        "bcftools view -Oz -S <(bcftools query -l {input.vcf} | grep -Pv {params.samples}) {input.vcf} > {output.vcf};\n"
+        "bcftools view -Oz -S {input.samples} {input.vcf} > {output.vcf};\n"
         "bcftools index {output.vcf}\n"
+
 
 rule index_hg19:
     input:
@@ -80,6 +102,16 @@ rule index_hg19:
     shell:
         "bowtie2-build --threads {threads} {input} {input}"
 
+rule save_genotype:
+    input:
+        vcf=VCF
+    params:
+        sample="{sample}"
+    output:
+        ONEKG_GT
+    shell:
+        "bcftools view -Ou -s {params.sample} {input} | bcftools view -i 'GT~\"A\"' -Oz > {output}"
+
 rule simulate_haplotype:
     input:
         ref=config["hg19_index"],
@@ -91,7 +123,7 @@ rule simulate_haplotype:
         sample="{sample}",
         i="{i}"
     shell:
-        "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa};"
+        "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa} 2>/dev/null;"
 
 rule simulate_reads:
     input:
@@ -99,49 +131,45 @@ rule simulate_reads:
         "{sample}/genome2.fa"
     output:
         fa=temp("{sample}/full_genome.fa"),
-        fq=READS,
-        sam=READS.replace(".fq.gz", ".sam")
+        fq1=TRAIN_READS,
+        sam1=TRAIN_READS.replace(".fq.gz", ".sam"),
+        fq2=TEST_READS,
+        sam2=TEST_READS.replace(".fq.gz", ".sam")
     params:
-        nreads=config["nreads"],
+        ntrain=config["n_train_reads"],
+        ntest=config["n_test_reads"],
         rlen=config["read_length"]
     threads: 16
     shell:
         "cat {input} | awk 'BEGIN {{i=1}} /^>/ {{print \">genome\"i++}} /^[^>]/ {{print}}' > {output.fa};\n"
         "mason_simulator --num-threads {threads} "
                          "-ir {output.fa} "
-                         "-n {params.nreads} "
+                         "-n {params.ntrain} "
                          "--illumina-read-length {params.rlen} "
-                         "-o {output.fq} "
-                         "-oa {output.sam}"
+                         "-o {output.fq1} "
+                         "-oa {output.sam1};\n"
+        "mason_simulator --num-threads {threads} "
+                         "-ir {output.fa} "
+                         "-n {params.ntest} "
+                         "--illumina-read-length {params.rlen} "
+                         "-o {output.fq2} "
+                         "-oa {output.sam2}"
 
-rule split_true_read_alignments:
+rule split_test_read_alignments:
     input:
-        sam=READS.replace(".fq.gz", ".sam")
+        sam=TEST_READS.replace(".fq.gz", ".sam")
     output:
-        sam1=READS.replace(".fq.gz", ".1.sam"),
-        sam2=READS.replace(".fq.gz", ".2.sam")
-    run:
-        fp1 = open(output[0], "w")
-        fp2 = open(output[1], "w")
-        for line in open(input[0], "r"):
-            if line[0] == "@":
-                fp1.write(line)
-                fp2.write(line)
-            else:
-                fields = line.split()
-                if fields[2] == "genome1":
-                    fp1.write(line)
-                elif fields[2] == "genome2":
-                    fp2.write(line)
-        fp1.close()
-        fp2.close()
+        sam1=TEST_READS.replace(".fq.gz", ".1.sam"),
+        sam2=TEST_READS.replace(".fq.gz", ".2.sam")
+    script:
+        "scripts/split_sam_by_ref.py"
 
-rule lift_true_read_alignments:
+rule lift_test_read_alignments:
     input:
         vcf=VCF,
-        sam=READS.replace(".fq.gz", ".{i}.sam"),
+        sam=TEST_READS.replace(".fq.gz", ".{i}.sam"),
     output:
-        sam=READS.replace(".fq.gz", ".{i}.lifted.sam")
+        sam=TEST_READS.replace(".fq.gz", ".{i}.lifted.sam")
     params:
         sample = "{sample}",
         h = lambda w: int(w.i) - 1,
@@ -149,12 +177,12 @@ rule lift_true_read_alignments:
     shell:
         "liftover/liftover lift -v {input.vcf} -a {input.sam} -s {params.sample} --haplotype {params.h} -n <(echo '21	genome{params.i}') > {output}"
         
-rule concat_lifted_truth:
+rule test_concat:
     input:
-        one=READS.replace(".fq.gz", ".1.lifted.sam"),
-        two=READS.replace(".fq.gz", ".2.lifted.sam")
+        one=TEST_READS.replace(".fq.gz", ".1.lifted.sam"),
+        two=TEST_READS.replace(".fq.gz", ".2.lifted.sam")
     output:
-        TRUE_ALNS
+        TEST_TRUTH
     shell:
         "samtools merge -u {output} {input.one} {input.two}"
 
@@ -166,7 +194,6 @@ rule extract_lengths:
     shell:
         "bcftools view -h {input} | grep '##contig' | sed -E 's/##contig=<ID=(.*),assembly=.*,length=([0-9]+)>/\\1\t\\2/' > {output}"
         
-
 ##### IMPUTATION START #######
 genotyping_strategy = {
     'likelihood_naive': 'likelihood'
@@ -195,7 +222,7 @@ IMP_LIFT              =   "{sample}/{coverage}x/{genotyper}/{filter}/pg.{i}.lft"
 
 rule imp_align_subset:
     input:
-        reads=READS,
+        reads=TRAIN_READS,
         fa=config["hg19_index"],
         idx1=config["hg19_index"] + ".1.bt2"
     params:
@@ -273,7 +300,7 @@ rule imp_index:
         sample="{sample}",
         i="{i}"
     shell:
-        "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa};\n"
+        "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa} 2> /dev/null;\n"
         "bowtie2-build --threads {threads} {output.fa} {output.fa}"
 
 # rule imp_liftover_serialize:
@@ -304,7 +331,7 @@ rule imp_align_all:
         idx4=IMP_PG+".4.bt2",
         idx5=IMP_PG+".rev.1.bt2",
         idx6=IMP_PG+".rev.2.bt2",
-        reads=READS
+        reads=TEST_READS
     output:
         sam=IMP_UNLIFTED_ALNS
     threads: 16
@@ -337,7 +364,7 @@ rule imp_merge_alns:
 
 rule imp_score_alns:
     input:
-        truth=TRUE_ALNS,
+        truth=TEST_TRUTH,
         sam=IMP_MERGED_ALNS
     output:
         IMP_LIFTED_SCORE
@@ -357,7 +384,7 @@ rule hg19_align_all:
         idx4=config["hg19_index"]+".4.bt2",
         idx5=config["hg19_index"]+".rev.1.bt2",
         idx6=config["hg19_index"]+".rev.2.bt2",
-        reads=READS
+        reads=TEST_READS
     output:
         sam=HG19_ALNS
     threads: 16
@@ -366,7 +393,7 @@ rule hg19_align_all:
 
 rule hg19_score_alns:
     input:
-        truth=TRUE_ALNS,
+        truth=TEST_TRUTH,
         sam=HG19_ALNS
     output:
         HG19_SCORE
@@ -396,7 +423,7 @@ rule personal_index:
 rule personal_align_all:
     input:
         fa=GENOME,
-        reads=READS,
+        reads=TEST_READS,
         idx1=GENOME+".1.bt2",
     output:
         sam=PERS_UNLIFTED_ALNS
@@ -428,7 +455,7 @@ rule personal_merge_alns:
 
 rule personal_score_alns:
     input: 
-        truth=TRUE_ALNS,
+        truth=TEST_TRUTH,
         sam=PERS_MERGED_ALNS
     threads: 16
     output:
@@ -437,6 +464,60 @@ rule personal_score_alns:
         cmds["score"]
 
 
+### OTHER GENOME ALIGNMENTS ####
+OTHER_GENOME            =   "{other_sample}/genome{i}.fa"
+OTHER_UNLIFTED_ALNS     =   "{sample}/{other_sample}/unlifted.{i}.sam"
+OTHER_LIFTED_ALNS       =   "{sample}/{other_sample}/lifted.{i}.sam"
+OTHER_MERGED_ALNS       =   "{sample}/{other_sample}/merged.sam"
+OTHER_MERGED_SCORE      =   "{sample}/{other_sample}/merged.score"
+OTHER_SCORE             =   "{sample}/{other_sample}/alns.score"
+
+rule other_align_all:
+    input:
+        fa=OTHER_GENOME,
+        reads=TEST_READS,
+        idx1=OTHER_GENOME+".1.bt2",
+    output:
+        sam=OTHER_UNLIFTED_ALNS
+    threads: 16
+    shell:
+        cmds["align"]
+    
+rule other_lift_alns:
+    input:
+        vcf=VCF,
+        sam=OTHER_UNLIFTED_ALNS,
+        lengths=REF_LENGTHS
+    output:
+        sam=OTHER_LIFTED_ALNS
+    params:
+        sample="{other_sample}",
+        i=lambda w: int(w.i) - 1,
+        prefix=OTHER_LIFTED_ALNS.replace(".sam", "")
+    shell:
+        cmds["lift"]
+
+rule other_merge_alns:
+    input:
+        OTHER_LIFTED_ALNS.replace("{i}", "1"),
+        OTHER_LIFTED_ALNS.replace("{i}","2")
+    output:
+        OTHER_MERGED_ALNS
+    shell:
+        "hts_utils/merge_sams {input} > {output}"
+
+rule other_score_alns:
+    input: 
+        truth=TEST_TRUTH,
+        sam=OTHER_MERGED_ALNS
+    threads: 16
+    output:
+        OTHER_MERGED_SCORE
+    shell:
+        cmds["score"]
+
+
+### SUMMARIZE EXPERIMENTS ###
 rule imp_summarize_exp:
     input:
         ref_vcf=VCF,
@@ -486,9 +567,9 @@ rule personal_summarize_exp:
         "{sample}/personal/summary.txt",
     params:
         sample="{sample}",
-        coverage="30x",
-        genotyper="NA",
-        filter="NA"
+        coverage=config["total_coverage"],
+        genotyper="PERSONAL",
+        filter="PERSONAL"
     run:
         hamm1 = 0
         hamm2 = 0
@@ -518,9 +599,9 @@ rule hg19_summarize_exp:
         "{sample}/hg19/summary.txt",
     params:
         sample="{sample}",
-        coverage="30x",
-        genotyper="NA",
-        filter="NA"
+        coverage=config["total_coverage"],
+        genotyper="HG19",
+        filter="HG19"
     run:
         hamm1 = 0
         hamm2 = 0
@@ -553,10 +634,43 @@ rule hg19_summarize_exp:
             )
             fp.write(to_write)
 
-rule gather_summaries:
+rule other_summarize_exp:
     input:
-        "{sample}/{everything}/summary.txt"
+        ref_vcf=VCF,
+        scores=OTHER_MERGED_SCORE,
     output:
-        "{sample}/summaries.txt"
-    shell:
-        "cat {input} > {output}"
+        "{sample}/{other_sample}/summary.txt",
+    params:
+        other_sample="{other_sample}",
+        sample="{sample}",
+        coverage="30",
+        genotyper="{other_sample}",
+        filter="{other_sample}"
+    run:
+        # get hamm of imputed
+        hamm1 = 0
+        hamm2 = 0
+        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.ref_vcf}", iterable=True):
+            hamm1 = int(line)
+            break
+        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.ref_vcf}", iterable=True):
+            hamm2 = int(line)
+            break
+        # get score of alignments
+        c_alns = 0
+        t_alns = 0
+        for line in open(input.scores):
+            if line[-2] == "1":
+                c_alns += 1
+            t_alns += 1
+        with open(output[0], "w") as fp:
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+                sample=params.sample,
+                coverage=params.coverage,
+                genotyper=params.genotyper,
+                filter=params.filter,
+                hamm1=hamm1,
+                hamm2=hamm2,
+                correct=float(c_alns)/t_alns
+            )
+            fp.write(to_write)
