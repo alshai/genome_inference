@@ -10,9 +10,9 @@ wildcard_constraints:
     sample="NA.+|HG.+",
     other_sample="NA.+|HG.+",
 
-IMP_LIFTED_SCORE    =  "{sample}/{coverage}x/{genotyper}/{filter}/merged.score"
+IMP_MERGED_SCORE    =  "{sample}/{coverage}x/{genotyper}/{filter}/merged.score"
 PERS_MERGED_SCORE   =  "{sample}/personal/merged.score"
-HG19_SCORE          =  "{sample}/hg19/alns.score"
+HG19_SCORE          =  "{sample}/GRCh37/alns.score"
 TEST_SAMPLES="data/test_samples.txt"
 REF_SAMPLES="data/ref_samples.txt"
 
@@ -25,7 +25,7 @@ print(TEST_SAMPLES)
 rule all:
     input:
         TEST_SAMPLES, REF_SAMPLES,
-        expand("{sample}/hg19/summary.txt", sample=SAMPLES),
+        expand("{sample}/GRCh37/summary.txt", sample=SAMPLES),
         expand("{sample}/personal/summary.txt", sample=SAMPLES),
         expand("{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
                genotyper=["likelihood_naive"],
@@ -34,7 +34,14 @@ rule all:
                coverage=config["coverage"]
               ),
         expand("{sample}/{other_sample}/summary.txt", sample=SAMPLES, other_sample=SAMPLES),
-
+        expand("{sample}/ma/summary.txt", sample=SAMPLES, other_sample=SAMPLES),
+        # expand("{sample}/{coverage}x/{genotyper}/{filter}/rescued_repeats.bed",
+        #        genotyper=["likelihood_naive"],
+        #        filter=['ar', 'aa+ar', 'aa+ar+some_rr'],
+        #        sample=["HG02374"], 
+        #        coverage=[10]
+        #        ),
+ 
 ###### PREPARE DATA FOR LATER STAGES ############
 
 VCF         =   config["vcf"].replace(".vcf.gz", ".filtered.vcf.gz")
@@ -213,7 +220,7 @@ filtering_strategy = {
 }
 
 IMP_DIR               =   "{sample}/{coverage}x"
-IMP_SUBSET_SAM        =   "{sample}/{coverage}x/subset_v_hg19.sam"
+IMP_SUBSET_SAM        =   "{sample}/{coverage}x/subset_v_GRCh37.sam"
 IMP_COUNTS            =   "{sample}/{coverage}x/counts.{genotyper}.vcf.gz"
 IMP_FILTERED_COUNTS   =   "{sample}/{coverage}x/{genotyper}/{filter}/counts.vcf.gz"
 IMP_BEAGLE_GT         =   "{sample}/{coverage}x/{genotyper}/{filter}/imputed.vcf.gz"
@@ -320,7 +327,7 @@ rule imp_index:
 IMP_UNLIFTED_ALNS     =   os.path.join(IMP_DIR, "{genotyper}/{filter}/unlifted.{i}.sam")
 IMP_LIFTED_ALNS       =   os.path.join(IMP_DIR, "{genotyper}/{filter}/lifted.{i}.sam")
 IMP_MERGED_ALNS       =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.sam")
-IMP_LIFTED_SCORE      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.score")
+IMP_MERGED_SCORE      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.score")
 
 rule imp_align_all:
     input:
@@ -367,13 +374,13 @@ rule imp_score_alns:
         truth=TEST_TRUTH,
         sam=IMP_MERGED_ALNS
     output:
-        IMP_LIFTED_SCORE
+        IMP_MERGED_SCORE
     shell:
         cmds["score"]
 
 #### REFERENCE ALIGNMENTS ######
-HG19_ALNS              =   "{sample}/hg19/alns.sam"
-HG19_SCORE      =   "{sample}/hg19/alns.score"
+HG19_ALNS              =   "{sample}/GRCh37/alns.sam"
+HG19_SCORE      =   "{sample}/GRCh37/alns.score"
 
 rule hg19_align_all:
     input:
@@ -399,6 +406,90 @@ rule hg19_score_alns:
         HG19_SCORE
     shell: 
         cmds["score"]
+
+#### MAJOR ALLELE ALIGNMENTS ######
+MA_VCF = "data/major_allele.chr21.vcf.gz"
+MA_GENOME = "data/major_allele.chr21.fa"
+MA_UNLIFTED_ALNS              =   "{sample}/ma/unlifted.sam"
+MA_LIFTED_ALNS              =   "{sample}/ma/lifted.sam"
+MA_SCORE      =   "{sample}/ma/lifted.score"
+
+rule ma_vcf:
+    input:
+        VCF
+    output:
+        vcf=MA_VCF,
+        temp_vcf=temp(MA_VCF.replace(".gz","")),
+        idx=MA_VCF.replace(".gz", ".gz.csi")
+    run:
+        ofp = open(output.temp_vcf, "w")
+        for line in shell("bcftools view -Ou --force-samples -s' ' -i 'INFO/AF>0.5' data/chr21.filtered.vcf.gz | bcftools annotate -h <(echo '##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">')" , iterable=True):
+            if "#CHROM" in line:
+                line = line.rstrip() + "\tFORMAT\tMA"
+            elif line[0] != "#":
+                line = line.rstrip() + "\tGT\t1|1"    
+            ofp.write(line + '\n')
+        ofp.close()
+        shell("bcftools view -Oz {output.temp_vcf} > {output.vcf}")
+        shell("bcftools index {output.vcf}")
+
+rule ma_fasta_index:
+    input:
+        gt=MA_VCF,
+        idx=MA_VCF.replace(".vcf.gz", ".vcf.gz.csi"),
+        fa=config["hg19_index"]
+    output:
+        fa=MA_GENOME,
+        idx1=MA_GENOME+".1.bt2",
+        idx2=MA_GENOME+".2.bt2",
+        idx3=MA_GENOME+".3.bt2",
+        idx4=MA_GENOME+".4.bt2",
+        idx5=MA_GENOME+".rev.1.bt2",
+        idx6=MA_GENOME+".rev.2.bt2"
+    params:
+    run:
+        shell("bcftools consensus -f {input.fa} -H 1 {input.gt} > {output.fa}")
+        shell("bowtie2-build {output.fa} {output.fa}")
+
+rule ma_align_all:
+    input:
+        fa=MA_GENOME,
+        idx1=MA_GENOME+".1.bt2",
+        idx2=MA_GENOME+".2.bt2",
+        idx3=MA_GENOME+".3.bt2",
+        idx4=MA_GENOME+".4.bt2",
+        idx5=MA_GENOME+".rev.1.bt2",
+        idx6=MA_GENOME+".rev.2.bt2",
+        reads=TEST_READS
+    output:
+        sam=MA_UNLIFTED_ALNS
+    threads: 16
+    shell:
+        cmds["align"]
+
+rule ma_lift_alns:
+    input:
+        vcf=MA_VCF,
+        sam=MA_UNLIFTED_ALNS,
+        lengths=REF_LENGTHS
+    output:
+        sam=MA_LIFTED_ALNS
+    params:
+        sample="MA",
+        prefix=MA_LIFTED_ALNS.replace(".sam", ""),
+        i=0
+    shell:
+        cmds["lift"]
+
+rule ma_score_alns:
+    input:
+        truth=TEST_TRUTH,
+        sam=MA_LIFTED_ALNS
+    output:
+        MA_SCORE
+    shell: 
+        cmds["score"]
+
 
 ###### PERSONAL GENOME #######
 PERS_UNLIFTED_ALNS     =   "{sample}/personal/unlifted.{i}.sam"
@@ -522,14 +613,15 @@ rule imp_summarize_exp:
     input:
         ref_vcf=VCF,
         imp_vcf=IMP_BEAGLE_GT, 
-        scores=IMP_LIFTED_SCORE,
+        scores=IMP_MERGED_SCORE,
     output:
         "{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
     params:
         sample="{sample}",
         coverage="{coverage}",
         genotyper="{genotyper}",
-        filter="{filter}"
+        filter="{filter}",
+        ploidy="diploid"
     run:
         # get hamm of imputed
         hamm1 = 0
@@ -548,14 +640,15 @@ rule imp_summarize_exp:
                 c_alns += 1
             t_alns += 1
         with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
                 sample=params.sample,
                 coverage=params.coverage,
                 genotyper=params.genotyper,
                 filter=params.filter,
                 hamm1=hamm1,
                 hamm2=hamm2,
-                correct=float(c_alns)/t_alns
+                correct=float(c_alns)/t_alns,
+                ploidy=params.ploidy
             )
             fp.write(to_write)
 
@@ -569,7 +662,8 @@ rule personal_summarize_exp:
         sample="{sample}",
         coverage=config["total_coverage"],
         genotyper="PERSONAL",
-        filter="PERSONAL"
+        filter="PERSONAL",
+        ploidy="diploid"
     run:
         hamm1 = 0
         hamm2 = 0
@@ -580,14 +674,15 @@ rule personal_summarize_exp:
                 c_alns += 1
             t_alns += 1
         with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
                 sample=params.sample,
                 coverage=params.coverage,
                 genotyper=params.genotyper,
                 filter=params.filter,
                 hamm1=hamm1,
                 hamm2=hamm2,
-                correct=float(c_alns)/t_alns
+                correct=float(c_alns)/t_alns,
+                ploidy=params.ploidy
             )
             fp.write(to_write)
 
@@ -596,12 +691,13 @@ rule hg19_summarize_exp:
         ref_vcf=VCF,
         scores=HG19_SCORE,
     output:
-        "{sample}/hg19/summary.txt",
+        "{sample}/GRCh37/summary.txt",
     params:
         sample="{sample}",
-        coverage=config["total_coverage"],
-        genotyper="HG19",
-        filter="HG19"
+        coverage="0",
+        genotyper="GRCh37",
+        filter="GRCh37",
+        ploidy="haploid"
     run:
         hamm1 = 0
         hamm2 = 0
@@ -623,14 +719,15 @@ rule hg19_summarize_exp:
             t_alns += 1
 
         with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
                 sample=params.sample,
                 coverage=params.coverage,
                 genotyper=params.genotyper,
                 filter=params.filter,
                 hamm1=hamm1,
                 hamm2=hamm2,
-                correct=float(c_alns)/t_alns
+                correct=float(c_alns)/t_alns,
+                ploidy=params.ploidy
             )
             fp.write(to_write)
 
@@ -643,9 +740,10 @@ rule other_summarize_exp:
     params:
         other_sample="{other_sample}",
         sample="{sample}",
-        coverage="30",
+        coverage="0",
         genotyper="{other_sample}",
-        filter="{other_sample}"
+        filter="{other_sample}",
+        ploidy="diploid"
     run:
         # get hamm of imputed
         hamm1 = 0
@@ -664,13 +762,75 @@ rule other_summarize_exp:
                 c_alns += 1
             t_alns += 1
         with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\n".format(
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
                 sample=params.sample,
                 coverage=params.coverage,
                 genotyper=params.genotyper,
                 filter=params.filter,
                 hamm1=hamm1,
                 hamm2=hamm2,
-                correct=float(c_alns)/t_alns
+                correct=float(c_alns)/t_alns,
+                ploidy=params.ploidy
             )
             fp.write(to_write)
+
+rule ma_summarize_exp:
+    input:
+        ref_vcf=VCF,
+        ma_vcf=MA_VCF,
+        scores=MA_SCORE,
+    output:
+        "{sample}/ma/summary.txt",
+    params:
+        sample="{sample}",
+        coverage="0",
+        genotyper="MA",
+        filter="MA",
+        ploidy="haploid"
+    run:
+        # get hamm of imputed
+        hamm1 = 0
+        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p MA {input.ref_vcf} {input.ma_vcf}", iterable=True):
+            hamm1 = int(line)
+            break
+        hamm2 = hamm1
+        # get score of alignments
+        c_alns = 0
+        t_alns = 0
+        for line in open(input.scores):
+            if line[-2] == "1":
+                c_alns += 1
+            t_alns += 1
+        with open(output[0], "w") as fp:
+            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
+                sample=params.sample,
+                coverage=params.coverage,
+                genotyper=params.genotyper,
+                filter=params.filter,
+                hamm1=hamm1,
+                hamm2=hamm2,
+                correct=float(c_alns)/t_alns,
+                ploidy=params.ploidy
+            )
+            fp.write(to_write)
+
+#### ANALYZE RESCUED READS #####
+IMP_RESCUED_READS      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/rescued_reads.bed")
+IMP_RESCUED_REPEATS      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/rescued_repeats.bed")
+rule rescued_reads:
+    input:
+        imp_score=IMP_MERGED_SCORE,
+        ref_score=HG19_SCORE
+    output:
+        IMP_RESCUED_READS
+    script:
+        "scripts/get_rescued_reads.py"
+
+rule rescued_repeats:
+    input:
+        a=IMP_RESCUED_READS,
+        b=config["repeat_bed"]
+    output:
+        IMP_RESCUED_REPEATS
+    shell:
+        "bedtools intersect -wb -a {input.a} -b {input.b} > {output}"
