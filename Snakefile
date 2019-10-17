@@ -29,7 +29,7 @@ rule all:
         expand("{sample}/personal/summary.txt", sample=SAMPLES),
         expand("{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
                genotyper=["likelihood_naive"],
-               filter=['ar', 'aa+ar', 'aa+ar+some_rr'],
+               filter=['aa+ar+some_rr', 'ar', 'aa+ar'],
                sample=SAMPLES, 
                coverage=config["coverage"]
               ),
@@ -99,15 +99,15 @@ rule index_hg19:
     input:
         config["hg19_index"]
     output:
-        config["hg19_index"] + ".1.bt2",
-        config["hg19_index"] + ".2.bt2",
-        config["hg19_index"] + ".3.bt2",
-        config["hg19_index"] + ".4.bt2",
-        config["hg19_index"] + ".rev.1.bt2",
-        config["hg19_index"] + ".rev.2.bt2"
+        config["hg19_index"] + ".amb",
+        config["hg19_index"] + ".ann",
+        config["hg19_index"] + ".bwt",
+        config["hg19_index"] + ".pac",
+        config["hg19_index"] + ".sa",
     threads: 16
     shell:
-        "bowtie2-build --threads {threads} {input} {input}"
+        # "bowtie2-build --threads {threads} {input} {input}"
+        "bwa index {input} {input}"
 
 rule save_genotype:
     input:
@@ -231,14 +231,15 @@ rule imp_align_subset:
     input:
         reads=TRAIN_READS,
         fa=config["hg19_index"],
-        idx1=config["hg19_index"] + ".1.bt2"
+        idx1=config["hg19_index"] + ".amb"
     params:
         frac=lambda w: float(w.coverage) / config["total_coverage"], # multiply by 2 for diploid?
     output:
         sam=IMP_SUBSET_SAM
     threads: 16
     shell:
-        "bowtie2 -p {threads} -x {input.fa} -U <(seqtk sample {input.reads} {params.frac}) > {output.sam}"
+        # "bowtie2 -p {threads} -x {input.fa} -U <(seqtk sample {input.reads} {params.frac}) > {output.sam}"
+        "bwa mem -t {threads} {input.fa} <(seqtk sample {input.reads} {params.frac}) > {output.sam}"
 
 # genotyper is included here!!
 rule imp_count:
@@ -296,19 +297,19 @@ rule imp_index:
         idx=IMP_BEAGLE_GT + ".csi"
     output:
         fa=IMP_PG,
-        idx1=IMP_PG+".1.bt2",
-        idx2=IMP_PG+".2.bt2",
-        idx3=IMP_PG+".3.bt2",
-        idx4=IMP_PG+".4.bt2",
-        idx5=IMP_PG+".rev.1.bt2",
-        idx6=IMP_PG+".rev.2.bt2"
+        idx1=IMP_PG+".amb",
+        idx2=IMP_PG+".ann",
+        idx3=IMP_PG+".bwt",
+        idx4=IMP_PG+".pac",
+        idx5=IMP_PG+".sa",
     threads: 16
     params:
         sample="{sample}",
         i="{i}"
     shell:
         "bcftools consensus -f {input.ref} -H {params.i} -s {params.sample} {input.vcf} > {output.fa} 2> /dev/null;\n"
-        "bowtie2-build --threads {threads} {output.fa} {output.fa}"
+        # "bowtie2-build --threads {threads} {output.fa} {output.fa}"
+        "bwa index {output.fa} {output.fa}"
 
 # rule imp_liftover_serialize:
 #     input:
@@ -332,18 +333,14 @@ IMP_MERGED_SCORE      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.sco
 rule imp_align_all:
     input:
         fa=IMP_PG,
-        idx1=IMP_PG+".1.bt2",
-        idx2=IMP_PG+".2.bt2",
-        idx3=IMP_PG+".3.bt2",
-        idx4=IMP_PG+".4.bt2",
-        idx5=IMP_PG+".rev.1.bt2",
-        idx6=IMP_PG+".rev.2.bt2",
+        idx1=IMP_PG+".amb",
         reads=TEST_READS
     output:
         sam=IMP_UNLIFTED_ALNS
     threads: 16
     shell:
-        "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}"
+        # "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}"
+        "bwa mem -t {threads} {input.fa} {input.reads} > {output.sam}"
 
 rule imp_lift_alns:
     input:
@@ -385,12 +382,7 @@ HG19_SCORE      =   "{sample}/GRCh37/alns.score"
 rule hg19_align_all:
     input:
         fa=config["hg19_index"],
-        idx1=config["hg19_index"]+".1.bt2",
-        idx2=config["hg19_index"]+".2.bt2",
-        idx3=config["hg19_index"]+".3.bt2",
-        idx4=config["hg19_index"]+".4.bt2",
-        idx5=config["hg19_index"]+".rev.1.bt2",
-        idx6=config["hg19_index"]+".rev.2.bt2",
+        idx1=config["hg19_index"]+".amb",
         reads=TEST_READS
     output:
         sam=HG19_ALNS
@@ -440,26 +432,21 @@ rule ma_fasta_index:
         fa=config["hg19_index"]
     output:
         fa=MA_GENOME,
-        idx1=MA_GENOME+".1.bt2",
-        idx2=MA_GENOME+".2.bt2",
-        idx3=MA_GENOME+".3.bt2",
-        idx4=MA_GENOME+".4.bt2",
-        idx5=MA_GENOME+".rev.1.bt2",
-        idx6=MA_GENOME+".rev.2.bt2"
+        idx1=MA_GENOME+".amb",
+        idx2=MA_GENOME+".ann",
+        idx3=MA_GENOME+".bwt",
+        idx4=MA_GENOME+".pac",
+        idx5=MA_GENOME+".sa",
     params:
     run:
         shell("bcftools consensus -f {input.fa} -H 1 {input.gt} > {output.fa}")
-        shell("bowtie2-build {output.fa} {output.fa}")
+        # shell("bowtie2-build {output.fa} {output.fa}")
+        shell("bwa index {output.fa} {output.fa}")
 
 rule ma_align_all:
     input:
         fa=MA_GENOME,
-        idx1=MA_GENOME+".1.bt2",
-        idx2=MA_GENOME+".2.bt2",
-        idx3=MA_GENOME+".3.bt2",
-        idx4=MA_GENOME+".4.bt2",
-        idx5=MA_GENOME+".rev.1.bt2",
-        idx6=MA_GENOME+".rev.2.bt2",
+        idx1=MA_GENOME+".amb",
         reads=TEST_READS
     output:
         sam=MA_UNLIFTED_ALNS
@@ -501,21 +488,21 @@ rule personal_index:
     input:
         fa=GENOME
     output:
-        idx1=GENOME+".1.bt2",
-        idx2=GENOME+".2.bt2",
-        idx3=GENOME+".3.bt2",
-        idx4=GENOME+".4.bt2",
-        idx5=GENOME+".rev.1.bt2",
-        idx6=GENOME+".rev.2.bt2"
+        idx1=GENOME+".amb",
+        idx2=GENOME+".ann",
+        idx3=GENOME+".bwt",
+        idx4=GENOME+".pac",
+        idx5=GENOME+".sa",
     threads: 16
     shell:
-        "bowtie2-build --threads {threads} {input} {input}"
+        # "bowtie2-build --threads {threads} {input} {input}"
+        "bwa index {input} {input}"
         
 rule personal_align_all:
     input:
         fa=GENOME,
         reads=TEST_READS,
-        idx1=GENOME+".1.bt2",
+        idx1=GENOME+".amb",
     output:
         sam=PERS_UNLIFTED_ALNS
     threads: 16
@@ -567,7 +554,7 @@ rule other_align_all:
     input:
         fa=OTHER_GENOME,
         reads=TEST_READS,
-        idx1=OTHER_GENOME+".1.bt2",
+        idx1=OTHER_GENOME+".amb",
     output:
         sam=OTHER_UNLIFTED_ALNS
     threads: 16

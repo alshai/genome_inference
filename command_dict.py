@@ -1,6 +1,7 @@
 cmds = {
     'align': 
-        "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}",
+        # "bowtie2 -p {threads} -x {input.fa} -U {input.reads} > {output.sam}",
+        "bwa mem -t {threads} {input.fa} {input.reads} > {output.sam}",
     'score': 
     "hts_utils/score_sam -b 25 {input.truth} {input.sam} > {output}" , # TODO: DEAL WITH THIS WORKAROUND
     'lift': 

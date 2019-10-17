@@ -16,8 +16,6 @@ vcf: "data/chr21.vcf.gz"
 
 beagle_map: "data/plink.chr21.GRCh37.map"
 
-shapeit_map: "data/chr21.b37.gmap.gz"
-
 frac_alt: 0.06
 
 repeat_bed: "data/chr21_repeats.bed"
