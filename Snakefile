@@ -326,6 +326,7 @@ rule imp_index:
 ##### IMPUTATION ALIGNMENTS #####
 IMP_UNLIFTED_ALNS     =   os.path.join(IMP_DIR, "{genotyper}/{filter}/unlifted.{i}.sam")
 IMP_LIFTED_ALNS       =   os.path.join(IMP_DIR, "{genotyper}/{filter}/lifted.{i}.sam")
+IMP_LIFTED_SCORE       =   os.path.join(IMP_DIR, "{genotyper}/{filter}/lifted.{i}.score")
 IMP_MERGED_ALNS       =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.sam")
 IMP_MERGED_SCORE      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/merged.score")
 
@@ -359,6 +360,15 @@ rule imp_lift_alns:
     shell:
         cmds["lift"]
 
+rule imp_score_lifted:
+    input:
+        truth=TEST_TRUTH,
+        sam=IMP_LIFTED_ALNS
+    output:
+        sam=IMP_LIFTED_SCORE
+    shell:
+        cmds["score"]
+
 rule imp_merge_alns:
     input:
         IMP_LIFTED_ALNS.replace("{i}", "1"),
@@ -368,8 +378,7 @@ rule imp_merge_alns:
     shell:
         "hts_utils/merge_sams {input} > {output}"
         
-
-rule imp_score_alns:
+rule imp_score_merged:
     input:
         truth=TEST_TRUTH,
         sam=IMP_MERGED_ALNS
