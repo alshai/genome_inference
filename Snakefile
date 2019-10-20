@@ -503,6 +503,7 @@ rule ma_score_alns:
 ###### PERSONAL GENOME #######
 PERS_UNLIFTED_ALNS     =   "{sample}/personal/unlifted.{i}.sam"
 PERS_LIFTED_ALNS       =   "{sample}/personal/lifted.{i}.sam"
+PERS_LIFTED_SCORES       =   "{sample}/personal/lifted.{i}.score"
 PERS_MERGED_ALNS       =   "{sample}/personal/merged.sam"
 PERS_MERGED_SCORE      =   "{sample}/personal/merged.score"
 
@@ -545,6 +546,17 @@ rule personal_lift_alns:
     shell:
         cmds["lift"]
 
+rule personal_score_lifted:
+    input: 
+        truth=TEST_TRUTH,
+        sam=PERS_LIFTED_ALNS
+    threads: 16
+    output:
+        PERS_LIFTED_SCORES
+    shell:
+        cmds["score"]
+
+
 rule personal_merge_alns:
     input:
         PERS_LIFTED_ALNS.replace("{i}", "1"),PERS_LIFTED_ALNS.replace("{i}","2")
@@ -553,7 +565,7 @@ rule personal_merge_alns:
     shell:
         "hts_utils/merge_sams {input} > {output}"
 
-rule personal_score_alns:
+rule personal_score_merged:
     input: 
         truth=TEST_TRUTH,
         sam=PERS_MERGED_ALNS
