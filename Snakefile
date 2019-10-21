@@ -595,6 +595,7 @@ rule personal_score_merged:
 
 ### OTHER GENOME ALIGNMENTS ####
 OTHER_GENOME            =   "{other_sample}/genome{i}.fa"
+OTHER_VCF               =   "{other_sample}/genotype.vcf.gz"
 OTHER_UNLIFTED_ALNS     =   "{sample}/{other_sample}/unlifted.{i}.sam"
 OTHER_LIFTED_ALNS       =   "{sample}/{other_sample}/lifted.{i}.sam"
 OTHER_MERGED_ALNS       =   "{sample}/{other_sample}/merged.sam"
@@ -614,7 +615,7 @@ rule other_align_all:
     
 rule other_lift_alns:
     input:
-        vcf=VCF,
+        vcf=OTHER_VCF,
         sam=OTHER_UNLIFTED_ALNS,
         lengths=REF_LENGTHS
     output:
@@ -771,7 +772,8 @@ rule hg19_summarize_exp:
 
 rule other_summarize_exp:
     input:
-        ref_vcf=VCF,
+        ref_vcf=ONEKG_GT,
+        other_vcf=OTHER_VCF,
         scores=OTHER_MERGED_SCORE,
     output:
         "{sample}/{other_sample}/summary.txt",
@@ -786,10 +788,10 @@ rule other_summarize_exp:
         # get hamm of imputed
         hamm1 = 0
         hamm2 = 0
-        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.ref_vcf}", iterable=True):
+        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.other_vcf}", iterable=True):
             hamm1 = int(line)
             break
-        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.ref_vcf}", iterable=True):
+        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.other_vcf}", iterable=True):
             hamm2 = int(line)
             break
         # get score of alignments
