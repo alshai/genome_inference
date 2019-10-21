@@ -115,15 +115,19 @@ rule save_genotype:
     params:
         sample="{sample}"
     output:
-        ONEKG_GT
+        vcf=ONEKG_GT,
+        vcf_idx=ONEKG_GT + '.csi'
     shell:
-        "bcftools view -Ou -s {params.sample} {input} | bcftools view -i 'GT~\"A\"' -Oz > {output}"
+        "bcftools view -Ou -s {params.sample} {input} | "
+        "bcftools view -i 'GT~\"A\"' -Ou | "
+        "bcftools norm -Oz -d indels > {output.vcf};\n"
+        "bcftools index --force {output.vcf}"
 
 rule simulate_haplotype:
     input:
         ref=config["hg19_index"],
-        vcf=VCF,
-        vcf_idx=VCF + ".csi"
+        vcf=ONEKG_GT,
+        vcf_idx=ONEKG_GT + ".csi"
     output:
         fa=GENOME
     params:
@@ -173,7 +177,7 @@ rule split_test_read_alignments:
 
 rule lift_test_read_alignments:
     input:
-        vcf=VCF,
+        vcf=ONEKG_GT,
         sam=TEST_READS.replace(".fq.gz", ".{i}.sam"),
     output:
         sam=TEST_READS.replace(".fq.gz", ".{i}.lifted.sam")
@@ -224,6 +228,7 @@ IMP_SUBSET_SAM        =   "{sample}/{coverage}x/subset_v_GRCh37.sam"
 IMP_COUNTS            =   "{sample}/{coverage}x/counts.{genotyper}.vcf.gz"
 IMP_FILTERED_COUNTS   =   "{sample}/{coverage}x/{genotyper}/{filter}/counts.vcf.gz"
 IMP_BEAGLE_GT         =   "{sample}/{coverage}x/{genotyper}/{filter}/imputed.vcf.gz"
+IMP_FILTERED_GT         =   "{sample}/{coverage}x/{genotyper}/{filter}/imputed.filtered.vcf.gz"
 IMP_PG                =   "{sample}/{coverage}x/{genotyper}/{filter}/pg.{i}.fa"
 IMP_LIFT              =   "{sample}/{coverage}x/{genotyper}/{filter}/pg.{i}.lft"
 
@@ -289,11 +294,23 @@ rule imp_beagle_impute:
         out={params.prefix};\n"
         "bcftools index {output.vcf};\n"
 
+rule imp_beagle_filter:
+    input:
+        vcf=IMP_BEAGLE_GT,
+        vcf_idx=IMP_BEAGLE_GT + ".csi"
+    output:
+        vcf=IMP_FILTERED_GT,
+        vcf_idx=IMP_FILTERED_GT + ".csi"
+    shell:
+        # "bcftools view -Ou -i 'GT~\"A\" && (GT==\"snp\" || (GT~\"indels\" && N_ALT<2))' {input.vcf} | "
+        "bcftools norm -Oz -d indels {input.vcf} > {output.vcf};\n"
+        "bcftools index --force {output.vcf};\n"
+
 rule imp_index:
     input:
         ref=config["hg19_index"],
-        vcf=IMP_BEAGLE_GT,
-        idx=IMP_BEAGLE_GT + ".csi"
+        vcf=IMP_FILTERED_GT,
+        idx=IMP_FILTERED_GT + ".csi"
     output:
         fa=IMP_PG,
         idx1=IMP_PG+".1.bt2",
@@ -349,7 +366,7 @@ rule imp_align_all:
 rule imp_lift_alns:
     input:
         sam=IMP_UNLIFTED_ALNS,
-        vcf=IMP_BEAGLE_GT,
+        vcf=IMP_FILTERED_GT,
         lengths=REF_LENGTHS
     output:
         sam=IMP_LIFTED_ALNS
@@ -534,7 +551,7 @@ rule personal_align_all:
 
 rule personal_lift_alns:
     input:
-        vcf=VCF,
+        vcf=ONEKG_GT,
         sam=PERS_UNLIFTED_ALNS,
         lengths=REF_LENGTHS
     output:
@@ -632,8 +649,8 @@ rule other_score_alns:
 ### SUMMARIZE EXPERIMENTS ###
 rule imp_summarize_exp:
     input:
-        ref_vcf=VCF,
-        imp_vcf=IMP_BEAGLE_GT, 
+        ref_vcf=ONEKG_GT,
+        imp_vcf=IMP_FILTERED_GT, 
         scores=IMP_MERGED_SCORE,
     output:
         "{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
@@ -675,7 +692,7 @@ rule imp_summarize_exp:
 
 rule personal_summarize_exp:
     input:
-        ref_vcf=VCF,
+        ref_vcf=ONEKG_GT,
         scores=PERS_MERGED_SCORE,
     output:
         "{sample}/personal/summary.txt",
@@ -709,7 +726,7 @@ rule personal_summarize_exp:
 
 rule hg19_summarize_exp:
     input:
-        ref_vcf=VCF,
+        ref_vcf=ONEKG_GT,
         scores=HG19_SCORE,
     output:
         "{sample}/GRCh37/summary.txt",
