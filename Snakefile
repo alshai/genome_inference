@@ -2,6 +2,7 @@ import math
 import os
 import random
 from command_dict import cmds
+from scripts.summarize import *
 
 configfile: "config.yaml"
 
@@ -10,9 +11,10 @@ wildcard_constraints:
     sample="NA.+|HG.+",
     other_sample="NA.+|HG.+",
 
-IMP_MERGED_SCORE    =  "{sample}/{coverage}x/{genotyper}/{filter}/merged.score"
+IMP_PREFIX    =  "{sample}/{coverage}x/{genotyper}/{filter}/{fname}"
 PERS_MERGED_SCORE   =  "{sample}/personal/merged.score"
 HG19_SCORE          =  "{sample}/GRCh37/alns.score"
+MA_SCORE            = "{sample}/ma/lifted_md.score"
 TEST_SAMPLES="data/test_samples.txt"
 REF_SAMPLES="data/ref_samples.txt"
 
@@ -21,26 +23,21 @@ if os.path.isfile(TEST_SAMPLES) and os.path.isfile(REF_SAMPLES):
 else:
     SAMPLES = []
 
-print(TEST_SAMPLES)
 rule all:
     input:
         TEST_SAMPLES, REF_SAMPLES,
-        expand("{sample}/GRCh37/summary.txt", sample=SAMPLES),
-        expand("{sample}/personal/summary.txt", sample=SAMPLES),
-        expand("{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
+        expand("{sample}/{x}/summary.txt",
+               sample=SAMPLES,
+               x=SAMPLES + ["personal", "GRCh37", "ma"]),
+        expand(IMP_PREFIX,
+               sample=SAMPLES,
+               coverage=config["coverage"],
                genotyper=["likelihood_naive"],
-               filter=['ar', 'aa+ar', 'aa+ar+some_rr'],
-               sample=SAMPLES, 
-               coverage=config["coverage"]
-              ),
-        expand("{sample}/{other_sample}/summary.txt", sample=SAMPLES, other_sample=SAMPLES),
-        expand("{sample}/ma/summary.txt", sample=SAMPLES, other_sample=SAMPLES),
-        # expand("{sample}/{coverage}x/{genotyper}/{filter}/rescued_repeats.bed",
-        #        genotyper=["likelihood_naive"],
-        #        filter=['ar', 'aa+ar', 'aa+ar+some_rr'],
-        #        sample=["HG02374"], 
-        #        coverage=[10]
-        #        ),
+               filter=["ar", "aa+ar+some_rr", "aa+ar"],
+               fname=["merged.score", "summary.txt"])
+
+
+
  
 ###### PREPARE DATA FOR LATER STAGES ############
 
@@ -388,12 +385,14 @@ rule imp_score_lifted:
 
 rule imp_merge_alns:
     input:
-        IMP_LIFTED_ALNS.replace("{i}", "1"),
-        IMP_LIFTED_ALNS.replace("{i}", "2")
+        a=IMP_LIFTED_ALNS.replace("{i}", "1"),
+        b=IMP_LIFTED_ALNS.replace("{i}", "2"),
+        fa=config["hg19_index"]
     output:
         IMP_MERGED_ALNS
     shell:
-        "hts_utils/merge_sams {input} > {output}"
+        "hts_utils/merge_sams {input.a} {input.b} | "
+        "samtools calmd - {input.fa} > {output}"
         
 rule imp_score_merged:
     input:
@@ -436,9 +435,10 @@ rule hg19_score_alns:
 #### MAJOR ALLELE ALIGNMENTS ######
 MA_VCF = "data/major_allele.chr21.vcf.gz"
 MA_GENOME = "data/major_allele.chr21.fa"
-MA_UNLIFTED_ALNS              =   "{sample}/ma/unlifted.sam"
-MA_LIFTED_ALNS              =   "{sample}/ma/lifted.sam"
-MA_SCORE      =   "{sample}/ma/lifted.score"
+MA_UNLIFTED_ALNS    =   "{sample}/ma/unlifted.sam"
+MA_LIFTED_ALNS      =   "{sample}/ma/lifted.sam"
+MA_ALNS             =   "{sample}/ma/lifted_md.sam"
+MA_SCORE            =   "{sample}/ma/lifted_md.score"
 
 rule ma_vcf:
     input:
@@ -507,10 +507,19 @@ rule ma_lift_alns:
     shell:
         cmds["lift"]
 
+rule ma_md_lifted:
+    input:
+        sam=MA_LIFTED_ALNS,
+        fa=config["hg19_index"]
+    output:
+        MA_ALNS
+    shell:
+        "samtools calmd {input.sam} {input.fa} > {output}"
+
 rule ma_score_alns:
     input:
         truth=TEST_TRUTH,
-        sam=MA_LIFTED_ALNS
+        sam=MA_ALNS
     output:
         MA_SCORE
     shell: 
@@ -576,11 +585,15 @@ rule personal_score_lifted:
 
 rule personal_merge_alns:
     input:
-        PERS_LIFTED_ALNS.replace("{i}", "1"),PERS_LIFTED_ALNS.replace("{i}","2")
+        a=PERS_LIFTED_ALNS.replace("{i}", "1"),
+        b=PERS_LIFTED_ALNS.replace("{i}","2"),
+        fa=config["hg19_index"]
     output:
         PERS_MERGED_ALNS
     shell:
-        "hts_utils/merge_sams {input} > {output}"
+        "hts_utils/merge_sams {input.a} {input.b} | "
+        "samtools calmd - {input.fa} > {output}"
+ 
 
 rule personal_score_merged:
     input: 
@@ -629,12 +642,14 @@ rule other_lift_alns:
 
 rule other_merge_alns:
     input:
-        OTHER_LIFTED_ALNS.replace("{i}", "1"),
-        OTHER_LIFTED_ALNS.replace("{i}","2")
+        a=OTHER_LIFTED_ALNS.replace("{i}", "1"),
+        b=OTHER_LIFTED_ALNS.replace("{i}","2"),
+        fa=config["hg19_index"]
     output:
         OTHER_MERGED_ALNS
     shell:
-        "hts_utils/merge_sams {input} > {output}"
+        "hts_utils/merge_sams {input.a} {input.b} | "
+        "samtools calmd - {input.fa} > {output}"
 
 rule other_score_alns:
     input: 
@@ -650,209 +665,110 @@ rule other_score_alns:
 ### SUMMARIZE EXPERIMENTS ###
 rule imp_summarize_exp:
     input:
-        ref_vcf=ONEKG_GT,
-        imp_vcf=IMP_FILTERED_GT, 
+        vcf1=ONEKG_GT,
+        vcf2=IMP_FILTERED_GT,
         scores=IMP_MERGED_SCORE,
+        alns=IMP_MERGED_ALNS,
     output:
-        "{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
+        out="{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
     params:
-        sample="{sample}",
+        s1="{sample}",
+        s2="{sample}",
+        experiment="IMP",
+        ploidy="diploid",
         coverage="{coverage}",
-        genotyper="{genotyper}",
-        filter="{filter}",
-        ploidy="diploid"
+        imp_input="{filter}",
     run:
-        # get hamm of imputed
-        hamm1 = 0
-        hamm2 = 0
-        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.sample} {input.ref_vcf} {input.imp_vcf}", iterable=True):
-            hamm1 = int(line)
-            break
-        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.sample} {input.ref_vcf} {input.imp_vcf}", iterable=True):
-            hamm2 = int(line)
-            break
-        # get score of alignments
-        c_alns = 0
-        t_alns = 0
-        for line in open(input.scores):
-            if line[-2] == "1":
-                c_alns += 1
-            t_alns += 1
-        with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
-                sample=params.sample,
-                coverage=params.coverage,
-                genotyper=params.genotyper,
-                filter=params.filter,
-                hamm1=hamm1,
-                hamm2=hamm2,
-                correct=float(c_alns)/t_alns,
-                ploidy=params.ploidy
-            )
-            fp.write(to_write)
+        summarize(input, output, params, shell)
 
 rule personal_summarize_exp:
     input:
-        ref_vcf=ONEKG_GT,
+        vcf1=ONEKG_GT,
+        vcf2=ONEKG_GT,
         scores=PERS_MERGED_SCORE,
+        alns=PERS_MERGED_ALNS,
     output:
-        "{sample}/personal/summary.txt",
+        out="{sample}/personal/summary.txt",
     params:
-        sample="{sample}",
-        coverage=config["total_coverage"],
-        genotyper="PERSONAL",
-        filter="PERSONAL",
-        ploidy="diploid"
+        s1="{sample}",
+        s2="{sample}",
+        experiment="PERSONAL",
+        ploidy="diploid",
+        coverage=0,
+        imp_input="PERSONAL",
     run:
-        hamm1 = 0
-        hamm2 = 0
-        c_alns = 0
-        t_alns = 0
-        for line in open(input.scores):
-            if line[-2] == "1":
-                c_alns += 1
-            t_alns += 1
-        with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
-                sample=params.sample,
-                coverage=params.coverage,
-                genotyper=params.genotyper,
-                filter=params.filter,
-                hamm1=hamm1,
-                hamm2=hamm2,
-                correct=float(c_alns)/t_alns,
-                ploidy=params.ploidy
-            )
-            fp.write(to_write)
+        summarize(input, output, params, shell)
 
 rule hg19_summarize_exp:
     input:
-        ref_vcf=ONEKG_GT,
+        vcf1=ONEKG_GT,
+        vcf2=ONEKG_GT,
+        alns=HG19_ALNS,
         scores=HG19_SCORE,
     output:
-        "{sample}/GRCh37/summary.txt",
+        out="{sample}/GRCh37/summary.txt",
     params:
-        sample="{sample}",
+        s1="{sample}",
+        s2="GRCh37",
+        experiment="GRCh37",
+        ploidy="haploid",
         coverage="0",
-        genotyper="GRCh37",
-        filter="GRCh37",
-        ploidy="haploid"
+        imp_input="GRCh37",
     run:
-        hamm1 = 0
-        hamm2 = 0
-        talts = 0
-        c_alns = 0
-        t_alns = 0
-        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | wc -l", iterable=True):
-            talts = int(line)
-            break
-        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | bcftools view -i 'GT~\"0|\"'", iterable=True):
-            hamm1 += 1
-        for line in shell("bcftools view -s {params.sample} {input.ref_vcf} | bcftools view -i 'GT~\"|0\"'", iterable=True):
-            hamm2 += 1
-        hamm1 = talts - hamm1
-        hamm2 = talts - hamm2
-        for line in open(input.scores):
-            if line[-2] == "1":
-                c_alns += 1
-            t_alns += 1
-
-        with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
-                sample=params.sample,
+        dist = 0
+        for line in shell("bcftools view -H -i 'GT~\"A\"' {input.vcf1}", iterable=True):
+            dist += 1
+        rc, ac = ref_bias(input, output, params, shell)
+        with open(output.out, "w") as fp:
+            to_write = "{sample}\t{exp}\t{ploidy}\t{coverage}\t{imp_input}\t{dist}\t{correct:.5f}\t{het_ref_count}\t{het_alt_count}\t{ref_over_alt:.5f}\n".format(
+                sample=params.s1,
+                exp=params.experiment,
+                ploidy=params.ploidy,
                 coverage=params.coverage,
-                genotyper=params.genotyper,
-                filter=params.filter,
-                hamm1=hamm1,
-                hamm2=hamm2,
-                correct=float(c_alns)/t_alns,
-                ploidy=params.ploidy
+                imp_input=params.imp_input,
+                dist=dist,
+                correct=aln_score(input,output,params,shell),
+                het_ref_count=rc,
+                het_alt_count=ac,
+                ref_over_alt=float(rc)/ac
             )
             fp.write(to_write)
 
 rule other_summarize_exp:
     input:
-        ref_vcf=ONEKG_GT,
-        other_vcf=OTHER_VCF,
+        vcf1=ONEKG_GT,
+        vcf2=OTHER_VCF,
         scores=OTHER_MERGED_SCORE,
+        alns=OTHER_MERGED_ALNS,
     output:
-        "{sample}/{other_sample}/summary.txt",
+        out="{sample}/{other_sample}/summary.txt"
     params:
-        other_sample="{other_sample}",
-        sample="{sample}",
+        s1="{sample}",
+        s2="{other_sample}",
+        experiment="OTHER",
+        ploidy="diploid",
         coverage="0",
-        genotyper="{other_sample}",
-        filter="{other_sample}",
-        ploidy="diploid"
+        imp_input="{other_sample}",
     run:
-        # get hamm of imputed
-        hamm1 = 0
-        hamm2 = 0
-        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.other_vcf}", iterable=True):
-            hamm1 = int(line)
-            break
-        for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.sample} -p {params.other_sample} {input.ref_vcf} {input.other_vcf}", iterable=True):
-            hamm2 = int(line)
-            break
-        # get score of alignments
-        c_alns = 0
-        t_alns = 0
-        for line in open(input.scores):
-            if line[-2] == "1":
-                c_alns += 1
-            t_alns += 1
-        with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
-                sample=params.sample,
-                coverage=params.coverage,
-                genotyper=params.genotyper,
-                filter=params.filter,
-                hamm1=hamm1,
-                hamm2=hamm2,
-                correct=float(c_alns)/t_alns,
-                ploidy=params.ploidy
-            )
-            fp.write(to_write)
+        summarize(input, output, params, shell)
 
 rule ma_summarize_exp:
     input:
-        ref_vcf=VCF,
-        ma_vcf=MA_VCF,
+        vcf1=ONEKG_GT,
+        vcf2=MA_VCF,
         scores=MA_SCORE,
+        alns=MA_ALNS,
     output:
-        "{sample}/ma/summary.txt",
+        out="{sample}/ma/summary.txt",
     params:
-        sample="{sample}",
+        s1="{sample}",
+        s2="MA",
+        experiment="MA",
+        ploidy="haploid",
         coverage="0",
-        genotyper="MA",
-        filter="MA",
-        ploidy="haploid"
+        imp_input="MA",
     run:
-        # get hamm of imputed
-        hamm1 = 0
-        for line in shell("varcount/vcf_score --score-only -r {params.sample} -p MA {input.ref_vcf} {input.ma_vcf}", iterable=True):
-            hamm1 = int(line)
-            break
-        hamm2 = hamm1
-        # get score of alignments
-        c_alns = 0
-        t_alns = 0
-        for line in open(input.scores):
-            if line[-2] == "1":
-                c_alns += 1
-            t_alns += 1
-        with open(output[0], "w") as fp:
-            to_write = "{sample}\t{coverage}\t{genotyper}\t{filter}\t{hamm1}\t{hamm2}\t{correct:.5f}\t{ploidy}\n".format(
-                sample=params.sample,
-                coverage=params.coverage,
-                genotyper=params.genotyper,
-                filter=params.filter,
-                hamm1=hamm1,
-                hamm2=hamm2,
-                correct=float(c_alns)/t_alns,
-                ploidy=params.ploidy
-            )
-            fp.write(to_write)
+        summarize(input, output, params, shell)
 
 #### ANALYZE RESCUED READS #####
 IMP_RESCUED_READS      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/rescued_reads.bed")
