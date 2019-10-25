@@ -1,8 +1,9 @@
-import math 
+import math
 import os
 import random
 from command_dict import cmds
 from scripts.summarize import *
+from scripts.dist_windows import dist_windows
 
 configfile: "config.yaml"
 
@@ -25,20 +26,24 @@ else:
 
 rule all:
     input:
-        TEST_SAMPLES, REF_SAMPLES,
-        expand("{sample}/{x}/summary.txt",
-               sample=SAMPLES,
-               x=SAMPLES + ["personal", "GRCh37", "ma"]),
+        # TEST_SAMPLES, REF_SAMPLES,
+        # expand("{sample}/{x}/summary.txt",
+        #        sample=SAMPLES,
+        #        x=SAMPLES + ["personal", "GRCh37", "ma"]),
+        # expand("{sample}/{x}/dists.txt",
+        #        sample=SAMPLES,
+        #        x=SAMPLES + ["personal", "GRCh37", "ma"]),
         expand(IMP_PREFIX,
-               sample=SAMPLES,
+               sample=["NA20534"],
                coverage=config["coverage"],
                genotyper=["likelihood_naive"],
-               filter=["ar", "aa+ar+some_rr", "aa+ar"],
-               fname=["merged.score", "summary.txt"])
+               filter=["aa+ar"],
+               # filter=["ar", "aa+ar+some_rr", "aa+ar"],
+               fname=["merged.score", "summary.txt", "dists.txt"])
 
 
 
- 
+
 ###### PREPARE DATA FOR LATER STAGES ############
 
 VCF         =   config["vcf"].replace(".vcf.gz", ".filtered.vcf.gz")
@@ -184,7 +189,7 @@ rule lift_test_read_alignments:
         i = "{i}"
     shell:
         "liftover/liftover lift -v {input.vcf} -a {input.sam} -s {params.sample} --haplotype {params.h} -n <(echo '21	genome{params.i}') > {output}"
-        
+
 rule test_concat:
     input:
         one=TEST_READS.replace(".fq.gz", ".1.lifted.sam"),
@@ -201,7 +206,7 @@ rule extract_lengths:
         REF_LENGTHS
     shell:
         "bcftools view -h {input} | grep '##contig' | sed -E 's/##contig=<ID=(.*),assembly=.*,length=([0-9]+)>/\\1\t\\2/' > {output}"
-        
+
 ##### IMPUTATION START #######
 genotyping_strategy = {
     'likelihood_naive': 'likelihood'
@@ -285,12 +290,14 @@ rule imp_beagle_impute:
         16
     shell:
         "java -jar beagle.12Jul19.0df.jar \
+        nthreads={threads} \
         gt={input.vcf} \
         ref={input.panel} \
         map={input.gmap} \
         out={params.prefix};\n"
         "bcftools index {output.vcf};\n"
 
+# outputs a filterd, sorted vcf file
 rule imp_beagle_filter:
     input:
         vcf=IMP_BEAGLE_GT,
@@ -298,9 +305,10 @@ rule imp_beagle_filter:
     output:
         vcf=IMP_FILTERED_GT,
         vcf_idx=IMP_FILTERED_GT + ".csi"
+    threads: 16
     shell:
-        # "bcftools view -Ou -i 'GT~\"A\" && (GT==\"snp\" || (GT~\"indels\" && N_ALT<2))' {input.vcf} | "
-        "bcftools norm -Oz -d indels {input.vcf} > {output.vcf};\n"
+        "bcftools norm -Ou -d indels {input.vcf} | "
+        "bcftools sort -Oz > {output.vcf};\n"
         "bcftools index --force {output.vcf};\n"
 
 rule imp_index:
@@ -393,7 +401,7 @@ rule imp_merge_alns:
     shell:
         "hts_utils/merge_sams {input.a} {input.b} | "
         "samtools calmd - {input.fa} > {output}"
-        
+
 rule imp_score_merged:
     input:
         truth=TEST_TRUTH,
@@ -404,8 +412,28 @@ rule imp_score_merged:
         cmds["score"]
 
 #### REFERENCE ALIGNMENTS ######
+HG19_VCF               = "data/hg19.chr21.vcf.gz"
 HG19_ALNS              =   "{sample}/GRCh37/alns.sam"
 HG19_SCORE      =   "{sample}/GRCh37/alns.score"
+
+rule HG19_vcf:
+    input:
+        VCF
+    output:
+        vcf=HG19_VCF,
+        temp_vcf=temp(HG19_VCF.replace(".gz","")),
+        idx=HG19_VCF.replace(".gz", ".gz.csi")
+    run:
+        ofp = open(output.temp_vcf, "w")
+        for line in shell("bcftools view -Ou --force-samples -s' ' data/chr21.filtered.vcf.gz | bcftools annotate -h <(echo '##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">')" , iterable=True):
+            if "#CHROM" in line:
+                line = line.rstrip() + "\tFORMAT\tGRCh37"
+            elif line[0] != "#":
+                line = line.rstrip() + "\tGT\t0|0"
+            ofp.write(line + '\n')
+        ofp.close()
+        shell("bcftools view -Oz {output.temp_vcf} > {output.vcf}")
+        shell("bcftools index {output.vcf}")
 
 rule hg19_align_all:
     input:
@@ -429,7 +457,7 @@ rule hg19_score_alns:
         sam=HG19_ALNS
     output:
         HG19_SCORE
-    shell: 
+    shell:
         cmds["score"]
 
 #### MAJOR ALLELE ALIGNMENTS ######
@@ -453,7 +481,7 @@ rule ma_vcf:
             if "#CHROM" in line:
                 line = line.rstrip() + "\tFORMAT\tMA"
             elif line[0] != "#":
-                line = line.rstrip() + "\tGT\t1|1"    
+                line = line.rstrip() + "\tGT\t1|1"
             ofp.write(line + '\n')
         ofp.close()
         shell("bcftools view -Oz {output.temp_vcf} > {output.vcf}")
@@ -522,7 +550,7 @@ rule ma_score_alns:
         sam=MA_ALNS
     output:
         MA_SCORE
-    shell: 
+    shell:
         cmds["score"]
 
 
@@ -546,7 +574,7 @@ rule personal_index:
     threads: 16
     shell:
         "bowtie2-build --threads {threads} {input} {input}"
-        
+
 rule personal_align_all:
     input:
         fa=GENOME,
@@ -573,7 +601,7 @@ rule personal_lift_alns:
         cmds["lift"]
 
 rule personal_score_lifted:
-    input: 
+    input:
         truth=TEST_TRUTH,
         sam=PERS_LIFTED_ALNS
     threads: 16
@@ -593,10 +621,10 @@ rule personal_merge_alns:
     shell:
         "hts_utils/merge_sams {input.a} {input.b} | "
         "samtools calmd - {input.fa} > {output}"
- 
+
 
 rule personal_score_merged:
-    input: 
+    input:
         truth=TEST_TRUTH,
         sam=PERS_MERGED_ALNS
     threads: 16
@@ -625,7 +653,7 @@ rule other_align_all:
     threads: 16
     shell:
         cmds["align"]
-    
+
 rule other_lift_alns:
     input:
         vcf=OTHER_VCF,
@@ -652,7 +680,7 @@ rule other_merge_alns:
         "samtools calmd - {input.fa} > {output}"
 
 rule other_score_alns:
-    input: 
+    input:
         truth=TEST_TRUTH,
         sam=OTHER_MERGED_ALNS
     threads: 16
@@ -671,6 +699,7 @@ rule imp_summarize_exp:
         alns=IMP_MERGED_ALNS,
     output:
         out="{sample}/{coverage}x/{genotyper}/{filter}/summary.txt",
+        out2="{sample}/{coverage}x/{genotyper}/{filter}/dists.txt",
     params:
         s1="{sample}",
         s2="{sample}",
@@ -680,6 +709,7 @@ rule imp_summarize_exp:
         imp_input="{filter}",
     run:
         summarize(input, output, params, shell)
+        dist_windows(input, output, params, shell)
 
 rule personal_summarize_exp:
     input:
@@ -689,6 +719,7 @@ rule personal_summarize_exp:
         alns=PERS_MERGED_ALNS,
     output:
         out="{sample}/personal/summary.txt",
+        out2="{sample}/personal/dists.txt",
     params:
         s1="{sample}",
         s2="{sample}",
@@ -698,15 +729,17 @@ rule personal_summarize_exp:
         imp_input="PERSONAL",
     run:
         summarize(input, output, params, shell)
+        dist_windows(input, output, params, shell)
 
 rule hg19_summarize_exp:
     input:
         vcf1=ONEKG_GT,
-        vcf2=ONEKG_GT,
+        vcf2=HG19_VCF,
         alns=HG19_ALNS,
         scores=HG19_SCORE,
     output:
         out="{sample}/GRCh37/summary.txt",
+        out2="{sample}/GRCh37/dists.txt",
     params:
         s1="{sample}",
         s2="GRCh37",
@@ -715,24 +748,8 @@ rule hg19_summarize_exp:
         coverage="0",
         imp_input="GRCh37",
     run:
-        dist = 0
-        for line in shell("bcftools view -H -i 'GT~\"A\"' {input.vcf1}", iterable=True):
-            dist += 1
-        rc, ac = ref_bias(input, output, params, shell)
-        with open(output.out, "w") as fp:
-            to_write = "{sample}\t{exp}\t{ploidy}\t{coverage}\t{imp_input}\t{dist}\t{correct:.5f}\t{het_ref_count}\t{het_alt_count}\t{ref_over_alt:.5f}\n".format(
-                sample=params.s1,
-                exp=params.experiment,
-                ploidy=params.ploidy,
-                coverage=params.coverage,
-                imp_input=params.imp_input,
-                dist=dist,
-                correct=aln_score(input,output,params,shell),
-                het_ref_count=rc,
-                het_alt_count=ac,
-                ref_over_alt=float(rc)/ac
-            )
-            fp.write(to_write)
+        summarize(input, output, params, shell)
+        dist_windows(input, output, params, shell)
 
 rule other_summarize_exp:
     input:
@@ -741,7 +758,8 @@ rule other_summarize_exp:
         scores=OTHER_MERGED_SCORE,
         alns=OTHER_MERGED_ALNS,
     output:
-        out="{sample}/{other_sample}/summary.txt"
+        out="{sample}/{other_sample}/summary.txt",
+        out2="{sample}/{other_sample}/dists.txt"
     params:
         s1="{sample}",
         s2="{other_sample}",
@@ -751,6 +769,7 @@ rule other_summarize_exp:
         imp_input="{other_sample}",
     run:
         summarize(input, output, params, shell)
+        dist_windows(input, output, params, shell)
 
 rule ma_summarize_exp:
     input:
@@ -760,6 +779,7 @@ rule ma_summarize_exp:
         alns=MA_ALNS,
     output:
         out="{sample}/ma/summary.txt",
+        out2="{sample}/ma/dists.txt",
     params:
         s1="{sample}",
         s2="MA",
@@ -769,6 +789,7 @@ rule ma_summarize_exp:
         imp_input="MA",
     run:
         summarize(input, output, params, shell)
+        dist_windows(input, output, params, shell)
 
 #### ANALYZE RESCUED READS #####
 IMP_RESCUED_READS      =   os.path.join(IMP_DIR, "{genotyper}/{filter}/rescued_reads.bed")

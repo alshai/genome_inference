@@ -1,13 +1,7 @@
-def vcf_score(input,output,params,shell):
-    dist1 = 0
-    dist2 = 0
-    for line in shell("varcount/vcf_score --score-only -r {params.s1} -p {params.s2} {input.vcf1} {input.vcf2}", iterable=True):
-        dist1 = int(line)
-        break
-    for line in shell("varcount/vcf_score --flip-gt --score-only -r {params.s1} -p {params.s2} {input.vcf1} {input.vcf2}", iterable=True):
-        dist2 = int(line)
-        break
-    return min(dist1, dist2)
+def vcf_score(input,output,params,shell, w):
+    for line in shell("hts_utils/gt_dist -w " + str(w) + " -1 {params.s1} -2 {params.s2} {input.vcf1} {input.vcf2}", iterable=True):
+        dist = int(line)
+        return dist
 
 def aln_score(input,output,params,shell):
     c_alns = 0
@@ -37,7 +31,7 @@ def summarize(input, output, params, shell):
             ploidy=params.ploidy,
             coverage=params.coverage,
             imp_input=params.imp_input,
-            dist=vcf_score(input,output,params,shell),
+            dist=vcf_score(input,output,params,shell, 30000),
             correct=aln_score(input,output,params,shell),
             het_ref_count=rc,
             het_alt_count=ac,
