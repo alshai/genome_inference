@@ -1,23 +1,32 @@
-n_test_samples: 5
+# sample config.yaml for genome inference Snakemake workflow
 
-coverage: [1, 2, 5, 10, 20]
+# maximum number of threads to use
+threads: 64
 
-total_coverage: 30
+# your reads should be located in $SAMPLE/reads.1.fq and $sample/reads.2.fq for
+# each $SAMPLE in samples
+samples: ["NA12878"]
 
-read_length: 100
+# total coverage of your read set
+total_coverage: 50
 
-n_train_reads: 14438968 # this is technically 15x coverage for each haplotype
+# the coverages you want to use for the initial genotyping step. Higher
+# coverage leads to better alignments, but require more time to produce the
+# personalized genome.
+coverages: [20]
 
-n_test_reads: 2000000
+# directory for your reference genome.
+# NOTE: fasta files with multiple chromosomes have not been tested yet.
+ref_fa: "data/chr21.fa"
 
-hg19_index: "data/chr21.fa"
+# bowtie2 index prefix for your reference genome
+ref_idx_pre: "data/chr21.fa"
 
-vcf: "data/chr21.vcf.gz"
+# haplotype reference panel for use in imputation. 
+ref_panel: "data/chr21.filtered.no_NA12878.vcf.gz"
 
+# plink recombination map for use with the beagle imputation step
 beagle_map: "data/plink.chr21.GRCh37.map"
 
-shapeit_map: "data/chr21.b37.gmap.gz"
-
-frac_alt: 0.06
-
-repeat_bed: "data/chr21_repeats.bed"
+# location for java jar file for beagle
+beagle_jar: "beagle.12Jul19.0df.jar"
